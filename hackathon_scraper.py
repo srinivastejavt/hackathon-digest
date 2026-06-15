@@ -102,49 +102,90 @@ def scrape_devpost():
 
 
 def scrape_mlh():
-    """MLH hackathons via their JSON feed."""
+    """MLH hackathons — scrape 2026 season HTML page."""
+    import re
     results = []
-    url = "https://mlh.io/seasons/2025/events.json"
-    r = get(url)
+    r = get("https://www.mlh.com/seasons/2026/events")
     if not r:
         return results
-    try:
-        events = r.json()
-    except Exception:
-        events = []
-    for ev in events[:20]:
-        title = ev.get("name", "").strip()
-        link  = ev.get("url", "")
-        end   = ev.get("end_date", "")
-        deadline = ("Due " + fmt_date(end)) if end else ""
-        if title and link:
-            results.append({"title": title, "url": link, "deadline": deadline, "prize": "", "source": "MLH"})
-    return results
-
-
+    soup = BeautifulSoup(r.text, "html.parser")
+    # Find the Upcoming Events section and stop at Past Events
+    in_upcoming = False
+    for tag in soup.find_all(["h2", "h3", "a"]):
+        if tag.name in ("h2", "h3"):
+            text = tag.get_text(strip=True).lower()
+            if "upcoming" in text:
+                in_upcoming = True
+            elif "past" in text:
+                break
+            continue
+        if not in_upcoming:
+            continue
+        href = tag.get("href", "")
+        if not href or ("events.mlh.io" not in href and "/events/" not in href):
+            continue
+        raw = tag.get_text(" ", strip=True)
+        # Extract date range e.g. "JUN 12 - 18" or "JUL 10 - 16"
+        dm = re.search(r"([A-Z]{3}\s+\d+\s*-\s*\d+)", raw)
+        if dm:
+            parts = dm.group(1).split("-")
+            month = parts[0].strip().split()[0]
+            end_day = parts[-1].strip()
+            deadline = f"Due {month} {end_day}"
+            title = raw[:raw.find(dm.group(0))].replace(" background", "").strip()
+        else:
+            deadline = ""
+            title = raw.replace(" background", "").strip()
+        if not href.startswith("http"):
+            href = "https://www.mlh.com" + href
+        # Clean duplicate title text (MLH repeats title 3x in tag)
+        words = title.split()
+        half = len(words) // 3
+        if half > 0 and " ".join(words[:half]) == " ".join(words[half:half*2]):
+            title = " ".join(words[:half])
+        if title and len(title) > 2:
+            results.append({"title": title[:80], "url": href, "deadline": deadline, "prize": "", "source": "MLH"})
+    seen = set()
+    deduped = []
+    for item in results:
+        if item["url"] not in seen:
+            seen.add(item["url"])
+            deduped.append(item)
+    return deduped[:10]
 def scrape_unstop():
-    """Unstop hackathons — with prize money and deadlines."""
+    """Unstop hackathons — HTML scrape (API returns empty)."""
+    import re
     results = []
-    url = "https://unstop.com/api/public/opportunity/search-result" + "?opportunity=hackathon&per_page=20&sort=deadline"
-    r = get(url)
+    r = get("https://unstop.com/hackathons")
     if not r:
         return results
-    try:
-        items = r.json().get("data", {}).get("data", [])
-    except Exception:
-        items = []
-    for h in items:
-        title   = h.get("title", "").strip()
-        slug    = h.get("seo_url", "") or h.get("id", "")
-        link    = f"https://unstop.com/hackathons/{slug}" if slug else ""
-        prize   = fmt_prize(h.get("prize_money", ""))
-        end_raw = h.get("ends_at", "") or h.get("registrations_end", "")
-        deadline = ("Due " + fmt_date(end_raw)) if end_raw else ""
-        if title and link:
-            results.append({"title": title, "url": link, "deadline": deadline, "prize": prize, "source": "Unstop"})
-    return results
-
-
+    soup = BeautifulSoup(r.text, "html.parser")
+    for a in soup.select("a[href*='/hackathons/']")[:20]:
+        href = a.get("href", "")
+        if not href.startswith("http"):
+            href = "https://unstop.com" + href
+        raw = a.get_text(" ", strip=True)
+        if not raw or len(raw) < 5 or raw.lower() in ("hackathons", "competitions"):
+            continue
+        # Look for prize in text like "INR 1,00,000" or "USD 10,000"
+        prize = ""
+        pm = re.search(r"(INR|USD|\$)[\s,\d\.]+", raw)
+        if pm:
+            prize = pm.group(0).strip()[:20]
+        # Look for date like "30 Jun 2026" or "Jun 30, 2026"
+        deadline = ""
+        dm = re.search(r"(\d{1,2}\s+[A-Za-z]{3}\s+202\d|[A-Za-z]{3}\s+\d{1,2},?\s+202\d)", raw)
+        if dm:
+            deadline = "Due " + dm.group(0).strip()
+        title = raw[:80]
+        results.append({"title": title, "url": href, "deadline": deadline, "prize": fmt_prize(prize), "source": "Unstop"})
+    seen = set()
+    deduped = []
+    for item in results:
+        if item["url"] not in seen:
+            seen.add(item["url"])
+            deduped.append(item)
+    return deduped[:10]
 def scrape_dorahacks():
     """DoraHacks — try JSON API endpoints, fall back to HTML."""
     results = []
