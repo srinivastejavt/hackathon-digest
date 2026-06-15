@@ -1,36 +1,27 @@
 #!/usr/bin/env python3
 """
 Hackathon + Incubator Daily Scraper
-Scrapes Devpost, MLH, Devfolio, Unstop, YC, Antler, Techstars, and more.
-Sends a daily digest to Telegram.
-Credentials are injected via GitHub Secrets (TELEGRAM_TOKEN, TELEGRAM_CHAT_ID).
+Credentials injected via GitHub Secrets: TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
 """
-
-import os
-import json
-import hashlib
-import requests
+import os, json, hashlib, requests
 from datetime import datetime, date
 from bs4 import BeautifulSoup
 
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
-SEEN_FILE = os.path.join(os.path.dirname(__file__), ".seen_items.json")
-HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36"}
-
+SEEN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".seen_items.json")
+HEADERS = {"User-Agent": "Mozilla/5.0 Chrome/124.0.0.0"}
 
 def load_seen():
     if os.path.exists(SEEN_FILE):
-        with open(SEEN_FILE) as f:
-            return set(json.load(f))
+        with open(SEEN_FILE) as f: return set(json.load(f))
     return set()
 
 def save_seen(seen):
-    with open(SEEN_FILE, "w") as f:
-        json.dump(list(seen), f)
+    with open(SEEN_FILE, "w") as f: json.dump(list(seen), f)
 
 def item_id(title, url):
-    return hashlib.md5(f"{title}|{url}".encode()).hexdigest()
+    return hashlib.md5((title + "|" + url).encode()).hexdigest()
 
 def get(url, timeout=10):
     try:
@@ -38,7 +29,7 @@ def get(url, timeout=10):
         r.raise_for_status()
         return r
     except Exception as e:
-        print(f"  [warn] {url} -> {e}")
+        print("  [warn]", url, "->", e)
         return None
 
 def scrape_devpost():
@@ -48,8 +39,7 @@ def scrape_devpost():
     try:
         for h in r.json().get("hackathons", []):
             items.append({"title": h.get("title",""), "url": h.get("url",""), "deadline": h.get("submission_period_dates",""), "prize": h.get("prize_amount",""), "source": "Devpost"})
-    except Exception as e:
-        print(f"  [devpost] {e}")
+    except Exception as e: print("  [devpost]", e)
     return items
 
 def scrape_mlh():
@@ -72,9 +62,8 @@ def scrape_devfolio():
     try:
         for h in r.json().get("results", []):
             slug = h.get("slug","")
-            items.append({"title": h.get("name",""), "url": f"https://devfolio.co/hackathons/{slug}", "deadline": h.get("ends_at","")[:10] if h.get("ends_at") else "", "prize": "", "source": "Devfolio"})
-    except Exception as e:
-        print(f"  [devfolio] {e}")
+            items.append({"title": h.get("name",""), "url": "https://devfolio.co/hackathons/" + slug, "deadline": h.get("ends_at","")[:10] if h.get("ends_at") else "", "prize": "", "source": "Devfolio"})
+    except Exception as e: print("  [devfolio]", e)
     return items
 
 def scrape_unstop():
@@ -83,9 +72,8 @@ def scrape_unstop():
     if not r: return items
     try:
         for h in r.json().get("data", {}).get("data", []):
-            items.append({"title": h.get("title",""), "url": f"https://unstop.com/hackathons/{h.get('slug','')}", "deadline": h.get("end_date",""), "prize": str(h.get("prize_money","")), "source": "Unstop"})
-    except Exception as e:
-        print(f"  [unstop] {e}")
+            items.append({"title": h.get("title",""), "url": "https://unstop.com/hackathons/" + h.get("slug",""), "deadline": h.get("end_date",""), "prize": str(h.get("prize_money","")), "source": "Unstop"})
+    except Exception as e: print("  [unstop]", e)
     return items
 
 def scrape_yc():
@@ -98,7 +86,7 @@ def scrape_yc():
         t = tag.get_text(strip=True)
         if "deadline" in t.lower() or "batch" in t.lower():
             deadline = t[:120]; break
-    items.append({"title": f"Y Combinator - {deadline or 'Check for current batch'}", "url": "https://www.ycombinator.com/apply", "deadline": deadline, "prize": "120k USD + network", "source": "YC"})
+    items.append({"title": "Y Combinator - " + (deadline or "Check for current batch"), "url": "https://www.ycombinator.com/apply", "deadline": deadline, "prize": "120k USD + network", "source": "YC"})
     return items
 
 INCUBATORS = [
@@ -117,9 +105,9 @@ def get_static_incubators():
 def send_telegram(text):
     if not TELEGRAM_TOKEN:
         print("[telegram] Token not set"); return
-    r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+    r = requests.post("https://api.telegram.org/bot" + TELEGRAM_TOKEN + "/sendMessage",
         json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML", "disable_web_page_preview": False}, timeout=10)
-    print("[telegram] sent" if r.ok else f"[telegram] error {r.status_code}")
+    print("[telegram] sent" if r.ok else "[telegram] error " + str(r.status_code))
 
 def chunk_messages(text, limit=4096):
     lines = text.split("\n")
@@ -133,15 +121,15 @@ def chunk_messages(text, limit=4096):
     return chunks
 
 def main():
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] Starting...")
+    print("[" + datetime.now().strftime("%Y-%m-%d %H:%M") + "] Starting...")
     seen = load_seen()
     all_items = []
     for name, fn in [("Devpost",scrape_devpost),("MLH",scrape_mlh),("Devfolio",scrape_devfolio),("Unstop",scrape_unstop),("YC",scrape_yc),("Incubators",get_static_incubators)]:
-        print(f"  {name}...")
+        print("  " + name + "...")
         try:
-            r = fn(); print(f"    -> {len(r)}"); all_items.extend(r)
+            r = fn(); print("    ->", len(r)); all_items.extend(r)
         except Exception as e:
-            print(f"    -> error: {e}")
+            print("    -> error:", e)
 
     new_items = []
     for item in all_items:
@@ -150,23 +138,31 @@ def main():
         if uid not in seen:
             new_items.append(item); seen.add(uid)
     save_seen(seen)
-    print(f"New: {len(new_items)} / {len(all_items)}")
+    print("New:", len(new_items), "/", len(all_items))
 
     EMOJI = {"Devpost":"💻","MLH":"🏫","Devfolio":"🛠","Unstop":"🏆","YC":"🚀","Antler":"🌍","Techstars":"⭐","Pioneer":"🧭","a16z":"💰","EF":"🤝","500 Global":"🌐","Incubators":"🏢"}
+
     if not new_items:
-        send_telegram(f"🔍 <b>Hackathon & Incubator Digest</b> - {date.today()}\n\nNo new opportunities today!"); return
+        send_telegram("🔍 <b>Hackathon & Incubator Digest</b> - " + str(date.today()) + "\n\nNo new opportunities today!"); return
 
     by_source = {}
     for item in new_items: by_source.setdefault(item["source"], []).append(item)
-    lines = [f"🎯 <b>Hackathon & Incubator Digest</b> - {date.today()}\n"]
+
+    lines = ["🎯 <b>Hackathon & Incubator Digest</b> - " + str(date.today()) + "\n"]
     for source, items in by_source.items():
-        lines.append(f"\n{EMOJI.get(source,'📌')} <b>{source}</b> ({len(items)} new)")
+        emoji = EMOJI.get(source, "📌")
+        lines.append("\n" + emoji + " <b>" + source + "</b> (" + str(len(items)) + " new)")
         for item in items[:10]:
-            entry = f'  • <a href="{item[\"url\"]}">{item[\"title\"][:80]}</a>'
-            if item.get("deadline"): entry += f"\n    📅 {item[\"deadline\"][:60]}"
-            if item.get("prize"): entry += f" | 💵 {item[\"prize\"]}"
+            url = item["url"]
+            title = item["title"][:80]
+            deadline = item.get("deadline", "")
+            prize = item.get("prize", "")
+            entry = '  • <a href="' + url + '">' + title + '</a>'
+            if deadline: entry += "\n    📅 " + deadline[:60]
+            if prize: entry += " | 💵 " + prize
             lines.append(entry)
-    lines.append(f"\n\n<i>Total: {len(new_items)} new | HackathonBot</i>")
+    lines.append("\n\n<i>Total: " + str(len(new_items)) + " new | HackathonBot</i>")
+
     for chunk in chunk_messages("\n".join(lines)):
         send_telegram(chunk)
 
