@@ -308,66 +308,113 @@ def chunk_messages(text, limit=4096):
     return chunks
 
 
-# ── MAIN ──────────────────────────────────────────────────────────────────────
+
+# ── MAIN ─────────────────────────────────────────────────────────────────────────────
 
 def main():
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] Starting scrape...")
 
-    scrapers = [
+    live_scrapers = [
         ("Devpost",   scrape_devpost),
         ("MLH",       scrape_mlh),
         ("Unstop",    scrape_unstop),
         ("DoraHacks", scrape_dorahacks),
         ("ETHGlobal", scrape_ethglobal),
         ("YC",        scrape_yc),
-        ("Static",    get_static_opportunities),
     ]
 
-    all_items = []
-    for name, fn in scrapers:
+    live_items = []
+    for name, fn in live_scrapers:
         print(f"  Scraping {name}...")
         try:
             results = fn()
-            print(f"    -> {len(results)} items")
-            all_items.extend(results)
+            print(f"    → {len(results)} items")
+            live_items.extend(results)
         except Exception as e:
-            print(f"    -> error: {e}")
+            print(f"    → error: {e}")
 
-    items = [i for i in all_items if i.get("title") and i.get("url")]
-    print(f"\nTotal: {len(items)} opportunities")
-
-    if not items:
-        send_telegram(f"No opportunities found today ({date.today()}). Check back tomorrow!")
-        return
-
-    by_source = {}
-    for item in items:
-        by_source.setdefault(item["source"], []).append(item)
+    static_items = get_static_opportunities()
+    live_items = [i for i in live_items if i.get("title") and i.get("url")]
+    today = date.today().strftime("%b %d, %Y")
+    print(f"Total: {len(live_items)} live + {len(static_items)} static")
 
     SOURCE_EMOJI = {
-        "Devpost": "💻", "MLH": "🏫", "Unstop": "🏆", "DoraHacks": "🌐",
-        "ETHGlobal": "⟠", "YC": "🚀", "Crypto Hackathon": "⛓",
-        "Crypto Accelerator": "🔮", "Crypto Grants": "💎",
-        "AI Accelerator": "🤖", "Incubator": "🌱", "Accelerator": "⚡",
+        "Devpost": "U0001f4bb", "MLH": "U0001f3eb", "Unstop": "U0001f3c6",
+        "DoraHacks": "U0001f310", "ETHGlobal": "⧠", "YC": "U0001f680",
     }
 
-    lines = ["🎯 <b>Hackathon & Opportunity Digest</b> -- " + str(date.today()) + "\n"]
+    CAT_EMOJI = {
+        "Crypto Hackathon":   "⛓",
+        "Crypto Accelerator": "U0001f52e",
+        "Crypto Grants":      "U0001f48e",
+        "AI Hackathon":       "U0001f916",
+        "AI Accelerator":     "U0001f9e0",
+        "Cohort":             "U0001f465",
+        "Incubator":          "U0001f331",
+        "Hackathon":          "U0001f4bb",
+        "Grant":              "U0001f4b0",
+    }
 
-    for source, source_items in by_source.items():
-        emoji = SOURCE_EMOJI.get(source, "📌")
-        lines.append("\n" + emoji + " <b>" + source + "</b> (" + str(len(source_items)) + ")")
-        for item in source_items[:8]:
-            title = html.escape(item["title"][:80])
-            url = item["url"]
-            note = html.escape(item.get("deadline", "")[:60])
-            entry = '  • <a href="' + url + '">' + title + "</a>"
+    # ── MESSAGE 1: Live listings (change daily) ─────────────────────────────
+    by_source = {}
+    for item in live_items:
+        by_source.setdefault(item["source"], []).append(item)
+
+    lines = [
+        f"U0001f3af <b>Daily Digest</b> — {today}",
+        f"<i>U0001f7e2 {len(live_items)} live listings  |  U0001f4da {len(static_items)} ongoing programs</i>",
+    ]
+
+    if by_source:
+        lines.append("")
+        lines.append("――― LIVE THIS WEEK ―――")
+        for source, items in by_source.items():
+            emoji = SOURCE_EMOJI.get(source, "U0001f4cc")
+            lines.append(f"
+{emoji} <b>{source}</b>  ({len(items)} open)")
+            for item in items[:4]:
+                t = html.escape(item["title"][:65])
+                u = item["url"]
+                d = item.get("deadline", "")
+                row = '  · <a href="' + u + '">' + t + '</a>'
+                if d:
+                    row += '  <i>— ' + html.escape(d[:35]) + '</i>'
+                lines.append(row)
+            if len(items) > 4:
+                lines.append(f'  <i>+{len(items)-4} more on site →</i>')
+    else:
+        lines.append("")
+        lines.append("⚠️ No live listings scraped today — see ongoing programs below.")
+
+    send_telegram("\n".join(lines))
+
+    # ── MESSAGE 2+: Ongoing programs (static, grouped by category) ─────────
+    by_cat = {}
+    for item in static_items:
+        cat = item.get("category", "Other")
+        by_cat.setdefault(cat, []).append(item)
+
+    prog_lines = [
+        f"U0001f4da <b>Ongoing Programs</b>  ({len(static_items)} open to apply)",
+        "<i>Sorted by category — tap any link to apply</i>",
+    ]
+
+    for cat, items in by_cat.items():
+        emoji = CAT_EMOJI.get(cat, "U0001f4cc")
+        prog_lines.append(f"
+{emoji} <b>{cat}</b>  ({len(items)})")
+        for item in items:
+            t = html.escape(item["title"])
+            u = item["url"]
+            note = item.get("note", "")
+            line = '  · <a href="' + u + '">' + t + '</a>'
             if note:
-                entry += "\n    📌 " + note
-            lines.append(entry)
+                line += '  <i>— ' + html.escape(note[:40]) + '</i>'
+            prog_lines.append(line)
 
-    lines.append("\n\n<i>" + str(len(items)) + " opportunities | HackathonBot</i>")
+    prog_lines.append(f"\n<i>HackathonBot · runs daily at 8am</i>")
 
-    for chunk in chunk_messages("\n".join(lines)):
+    for chunk in chunk_messages("\n".join(prog_lines)):
         send_telegram(chunk)
 
 
