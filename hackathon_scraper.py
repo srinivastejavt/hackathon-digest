@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 """
-Hackathon + Incubator + Accelerator + Cohort Daily Scraper
-Covers: hackathons, crypto accelerators, AI accelerators, incubators, cohorts
+Hackathon + Incubator + Accelerator + Cohort Daily Scraper  v3
+Covers: hackathons, crypto accelerators, AI accelerators, incubators, cohorts, grants
 Credentials injected via GitHub Secrets: TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
+Env vars: FOCUS=all|crypto,ai|web3 ... (comma-separated keywords)
 """
 
 import os, json, html, requests
 from datetime import datetime, date
 from bs4 import BeautifulSoup
 
-# ── CONFIG ────────────────────────────────────────────────────────────────────
+# ── CONFIG ──────────────────────────────────────────────────────────────────────────────────────────────────
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+FOCUS            = os.environ.get("FOCUS", "all").lower().strip()
 
 HEADERS = {
     "User-Agent": (
@@ -20,7 +22,7 @@ HEADERS = {
         "Chrome/124.0.0.0 Safari/537.36"
     )
 }
-# ─────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 
 def get(url, timeout=10):
@@ -33,133 +35,204 @@ def get(url, timeout=10):
         return None
 
 
-# ── LIVE SCRAPERS ─────────────────────────────────────────────────────────────
+def fmt_date(raw):
+    """Parse ISO or mixed date strings into short readable format."""
+    if not raw:
+        return ""
+    raw = str(raw).strip()
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(raw[:19], fmt).strftime("%b %d")
+        except Exception:
+            pass
+    return raw[:30]
+
+
+def fmt_prize(raw):
+    """Format prize amounts: 10000 -> $10k, 1500000 -> $1.5M."""
+    if not raw or str(raw).strip() in ("0", "None", ""):
+        return ""
+    s = str(raw).strip()
+    if s.startswith("$"):
+        return s[:20]
+    try:
+        v = int(float(s))
+        if v <= 0:
+            return ""
+        if v >= 1_000_000:
+            return f"${v / 1_000_000:.1f}M".replace(".0M", "M")
+        if v >= 1_000:
+            return f"${v // 1_000}k"
+        return f"${v}"
+    except Exception:
+        return s[:20]
+
+
+# ── LIVE SCRAPERS ───────────────────────────────────────────────────────────────────────────────────────
 
 def scrape_devpost():
-    items = []
-    r = get("https://devpost.com/api/hackathons?status[]=upcoming&status[]=open&order_by=deadline&per_page=20")
+    """Devpost hackathons — with prize amounts and deadlines."""
+    results = []
+    url = "https://devpost.com/api/hackathons" + "?order_by=deadline&per_page=20"
+    r = get(url)
     if not r:
-        return items
+        return results
     try:
-        for h in r.json().get("hackathons", []):
-            items.append({
-                "title": h.get("title", ""),
-                "url": h.get("url", ""),
-                "deadline": h.get("submission_period_dates", ""),
-                "prize": h.get("prize_amount", ""),
-                "source": "Devpost",
-            })
+        data = r.json()
+        hackathons = data.get("hackathons", [])
     except Exception as e:
-        print(f"  [devpost] {e}")
-    return items
+        print(f"  [warn] devpost json: {e}")
+        return results
+    for h in hackathons:
+        title = h.get("title", "").strip()
+        link  = h.get("url", "")
+        if not link.startswith("http"):
+            link = "https://devpost.com" + link
+        prize  = fmt_prize(h.get("prize_amount", ""))
+        raw_d  = h.get("submission_period_dates", "")
+        if raw_d and " - " in raw_d:
+            deadline = "Due " + raw_d.split(" - ")[-1].strip()
+        elif raw_d:
+            deadline = "Due " + raw_d.strip()
+        else:
+            deadline = ""
+        if title and link:
+            results.append({"title": title, "url": link, "deadline": deadline, "prize": prize, "source": "Devpost"})
+    return results
 
 
 def scrape_mlh():
-    items = []
-    r = get("https://mlh.io/seasons/2026/events")
+    """MLH hackathons via their JSON feed."""
+    results = []
+    url = "https://mlh.io/seasons/2025/events.json"
+    r = get(url)
     if not r:
-        return items
-    soup = BeautifulSoup(r.text, "lxml")
-    for event in soup.select(".event"):
-        title_el = event.select_one(".event-name")
-        link_el  = event.select_one("a.event-link")
-        date_el  = event.select_one(".event-date")
-        if title_el and link_el:
-            items.append({
-                "title": title_el.get_text(strip=True),
-                "url": link_el.get("href", ""),
-                "deadline": date_el.get_text(strip=True) if date_el else "",
-                "prize": "",
-                "source": "MLH",
-            })
-    return items
+        return results
+    try:
+        events = r.json()
+    except Exception:
+        events = []
+    for ev in events[:20]:
+        title = ev.get("name", "").strip()
+        link  = ev.get("url", "")
+        end   = ev.get("end_date", "")
+        deadline = ("Due " + fmt_date(end)) if end else ""
+        if title and link:
+            results.append({"title": title, "url": link, "deadline": deadline, "prize": "", "source": "MLH"})
+    return results
 
 
 def scrape_unstop():
-    items = []
-    r = get("https://unstop.com/api/public/opportunity/search-result?opportunity=hackathons&per_page=20&page=1&deadline=open")
+    """Unstop hackathons — with prize money and deadlines."""
+    results = []
+    url = "https://unstop.com/api/public/opportunity/search-result" + "?opportunity=hackathon&per_page=20&sort=deadline"
+    r = get(url)
     if not r:
-        return items
+        return results
     try:
-        for h in r.json().get("data", {}).get("data", []):
-            items.append({
-                "title": h.get("title", ""),
-                "url": "https://unstop.com/hackathons/" + h.get("slug", ""),
-                "deadline": h.get("end_date", ""),
-                "prize": str(h.get("prize_money", "")),
-                "source": "Unstop",
-            })
-    except Exception as e:
-        print(f"  [unstop] {e}")
-    return items
+        items = r.json().get("data", {}).get("data", [])
+    except Exception:
+        items = []
+    for h in items:
+        title   = h.get("title", "").strip()
+        slug    = h.get("seo_url", "") or h.get("id", "")
+        link    = f"https://unstop.com/hackathons/{slug}" if slug else ""
+        prize   = fmt_prize(h.get("prize_money", ""))
+        end_raw = h.get("ends_at", "") or h.get("registrations_end", "")
+        deadline = ("Due " + fmt_date(end_raw)) if end_raw else ""
+        if title and link:
+            results.append({"title": title, "url": link, "deadline": deadline, "prize": prize, "source": "Unstop"})
+    return results
 
 
 def scrape_dorahacks():
-    items = []
-    r = get("https://dorahacks.io/api/hackathon/list/?limit=20&status=open")
-    if not r:
-        return items
-    try:
-        data = r.json()
-        for h in data.get("data", data.get("list", [])):
-            slug = h.get("slug") or h.get("url_slug", "")
-            items.append({
-                "title": h.get("title", h.get("name", "")),
-                "url": "https://dorahacks.io/hackathon/" + slug if slug else "https://dorahacks.io",
-                "deadline": str(h.get("end_time", h.get("application_end", "")))[:10],
-                "prize": str(h.get("prize_pool", "")),
-                "source": "DoraHacks",
-            })
-    except Exception as e:
-        print(f"  [dorahacks] {e}")
-    return items
+    """DoraHacks — try JSON API endpoints, fall back to HTML."""
+    results = []
+    apis = [
+        "https://dorahacks.io/api/hackathon" + "?tab=open&limit=20",
+        "https://dorahacks.io/api/hackathon/list" + "?limit=20&status=open",
+    ]
+    for api_url in apis:
+        r = get(api_url)
+        if not r:
+            continue
+        try:
+            payload = r.json()
+            items = (payload.get("data") or payload.get("hackathons") or
+                     payload.get("list") or payload.get("results") or [])
+            if isinstance(payload, list):
+                items = payload
+        except Exception:
+            continue
+        for h in items[:15]:
+            title = (h.get("title") or h.get("name") or "").strip()
+            hid   = h.get("id") or h.get("buidl_id") or ""
+            link  = f"https://dorahacks.io/hackathon/{hid}/detail" if hid else "https://dorahacks.io/hackathon"
+            prize = fmt_prize(h.get("prize_pool") or h.get("total_prize") or "")
+            end   = h.get("voting_end") or h.get("end_time") or h.get("deadline") or ""
+            deadline = ("Due " + fmt_date(end)) if end else ""
+            if title:
+                results.append({"title": title, "url": link, "deadline": deadline, "prize": prize, "source": "DoraHacks"})
+        if results:
+            return results
+    # HTML fallback
+    r = get("https://dorahacks.io/hackathon")
+    if r:
+        soup = BeautifulSoup(r.text, "html.parser")
+        for card in soup.select("a[href*='/hackathon/']")[:15]:
+            title = card.get_text(strip=True)
+            href  = card.get("href", "")
+            if not href.startswith("http"):
+                href = "https://dorahacks.io" + href
+            if title and len(title) > 5:
+                results.append({"title": title[:80], "url": href, "deadline": "", "prize": "", "source": "DoraHacks"})
+    return results
 
 
 def scrape_ethglobal():
-    items = []
-    r = get("https://ethglobal.com/events/hackathons")
+    """ETHGlobal hackathons — scrape the events page."""
+    results = []
+    r = get("https://ethglobal.com/events")
     if not r:
-        return items
-    try:
-        soup = BeautifulSoup(r.text, "lxml")
-        seen_urls = set()
-        for card in soup.select("a[href*='/events/']"):
-            title = card.get_text(strip=True)
-            href = card.get("href", "")
-            if title and href and len(title) > 3:
-                url = href if href.startswith("http") else "https://ethglobal.com" + href
-                if url not in seen_urls:
-                    seen_urls.add(url)
-                    items.append({"title": title[:80], "url": url, "deadline": "", "prize": "", "source": "ETHGlobal"})
-    except Exception as e:
-        print(f"  [ethglobal] {e}")
-    return items[:10]
+        return results
+    soup = BeautifulSoup(r.text, "html.parser")
+    for a in soup.select("a[href*='/events/']")[:20]:
+        title = a.get_text(strip=True)
+        href  = a.get("href", "")
+        if not href.startswith("http"):
+            href = "https://ethglobal.com" + href
+        if title and len(title) > 3 and "/events/" in href:
+            results.append({"title": title[:80], "url": href, "deadline": "", "prize": "", "source": "ETHGlobal"})
+    seen = set()
+    deduped = []
+    for item in results:
+        if item["url"] not in seen:
+            seen.add(item["url"])
+            deduped.append(item)
+    return deduped[:10]
 
 
 def scrape_yc():
-    items = []
-    r = get("https://www.ycombinator.com/apply")
+    """Y Combinator current batch — scrape the apply page."""
+    results = []
+    r = get("https://www.ycombinator.com/apply/")
     if not r:
-        return items
-    soup = BeautifulSoup(r.text, "lxml")
-    deadline_text = ""
-    for tag in soup.find_all(["h1", "h2", "h3", "p", "span"]):
-        t = tag.get_text(strip=True)
-        if "deadline" in t.lower() or "batch" in t.lower():
-            deadline_text = t[:120]
+        return results
+    soup = BeautifulSoup(r.text, "html.parser")
+    deadline = ""
+    for tag in soup.find_all(["p", "span", "div", "h2", "h3"]):
+        t = tag.get_text(" ", strip=True)
+        if "deadline" in t.lower() or "application" in t.lower():
+            deadline = t[:60]
             break
-    items.append({
-        "title": "Y Combinator -- " + (deadline_text or "Apply now"),
-        "url": "https://www.ycombinator.com/apply",
-        "deadline": deadline_text,
-        "prize": "$500k investment",
-        "source": "YC",
+    results.append({
+        "title": "Y Combinator — Apply to YC",
+        "url": "https://www.ycombinator.com/apply/",
+        "deadline": deadline,
+        "prize": "",
+        "source": "YC"
     })
-    return items
-
-
-# ── STATIC OPPORTUNITIES ──────────────────────────────────────────────────────
-
+    return results
 STATIC_OPPORTUNITIES = [
     {"title": "Colosseum -- Solana Hackathon", "url": "https://www.colosseum.org", "note": "Check for live hackathons", "category": "Crypto Hackathon"},
     {"title": "Encode Club -- Hackathons", "url": "https://www.encode.club", "note": "Web3 education + hackathons", "category": "Crypto Hackathon"},
@@ -276,46 +349,73 @@ STATIC_OPPORTUNITIES = [
     {"title": "Fast Forward -- Accelerator", "url": "https://www.ffwd.org/apply", "note": "Tech nonprofits accelerator", "category": "Grant"},
     {"title": "Blue Ridge Labs -- Fellowship", "url": "https://blueridgelabs.org", "note": "Social impact tech fellowship", "category": "Grant"}
 ]
+
+
 def get_static_opportunities():
-    return [{"title": o["title"], "url": o["url"], "deadline": o.get("note", ""), "prize": "", "source": o["category"]} for o in STATIC_OPPORTUNITIES]
+    return STATIC_OPPORTUNITIES
 
-
-# ── TELEGRAM ──────────────────────────────────────────────────────────────────
 
 def send_telegram(text):
-    r = requests.post(
-        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-        json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True},
-        timeout=10
-    )
-    if r.ok:
-        print("[telegram] Message sent")
-    else:
-        print(f"[telegram] Error {r.status_code}: {r.text}")
-
-
-def chunk_messages(text, limit=4096):
-    lines = text.split("\n")
-    chunks, current = [], ""
-    for line in lines:
-        if len(current) + len(line) + 1 > limit:
-            chunks.append(current.strip())
-            current = line + "\n"
+    """Send a Telegram message with HTML parse mode."""
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        print("[dry-run] Would send:", text[:120])
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }
+    try:
+        r = requests.post(url, json=payload, timeout=15)
+        data = r.json()
+        if not data.get("ok"):
+            print(f"  [warn] Telegram error: {data}")
         else:
-            current += line + "\n"
-    if current.strip():
-        chunks.append(current.strip())
+            print("  [ok] Telegram message sent")
+    except Exception as e:
+        print(f"  [warn] Telegram send failed: {e}")
+
+
+def chunk_messages(text, max_len=4000):
+    """Split text into Telegram-safe chunks at newline boundaries."""
+    if len(text) <= max_len:
+        return [text]
+    chunks = []
+    lines  = text.split("\n")
+    cur    = ""
+    for line in lines:
+        if len(cur) + len(line) + 1 > max_len:
+            chunks.append(cur.rstrip())
+            cur = ""
+        cur += line + "\n"
+    if cur.strip():
+        chunks.append(cur.rstrip())
     return chunks
 
 
-
-
-# ── MAIN ──────────────────────────────────────────────────────────────────────────────────────
-
 def main():
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] Starting scrape...")
+    today      = date.today()
+    is_monday  = today.weekday() == 0
+    today_str  = today.strftime("%b %d, %Y")
+    dow        = today.strftime("%A")
+    NL         = "\n"
 
-    live_scrapers = [
+    # ── Apply FOCUS filter to static programs ──────────────────────────────────────
+    static_all   = get_static_opportunities()
+    if FOCUS == "all":
+        static_items = static_all
+    else:
+        kws = [k.strip() for k in FOCUS.split(",") if k.strip()]
+        static_items = [
+            i for i in static_all
+            if any(k in i.get("source", "").lower() or k in i.get("title", "").lower() for k in kws)
+        ]
+    print(f"[focus={FOCUS}] {len(static_items)}/{len(static_all)} static programs")
+
+    # ── Run live scrapers ────────────────────────────────────────────────────────────
+    scrapers = [
         ("Devpost",   scrape_devpost),
         ("MLH",       scrape_mlh),
         ("Unstop",    scrape_unstop),
@@ -323,99 +423,85 @@ def main():
         ("ETHGlobal", scrape_ethglobal),
         ("YC",        scrape_yc),
     ]
-
-    live_items = []
-    for name, fn in live_scrapers:
-        print(f"  Scraping {name}...")
+    live_sections = []
+    for name, fn in scrapers:
+        print(f"Scraping {name}...")
         try:
-            results = fn()
-            print(f"    → {len(results)} items")
-            live_items.extend(results)
+            items = fn()
         except Exception as e:
-            print(f"    → error: {e}")
+            print(f"  [error] {name}: {e}")
+            items = []
+        if not items:
+            print(f"  [skip] {name}: no results")
+            continue
+        sec = []
+        for it in items[:4]:
+            title = html.escape(it.get("title", "")[:70])
+            url   = it.get("url", "")
+            d     = it.get("deadline", "").strip()
+            p     = it.get("prize", "").strip()
+            row   = f'  • <a href="{url}">{title}</a>'
+            tags  = []
+            if d:
+                tags.append(html.escape(d[:40]))
+            if p:
+                tags.append("\U0001f4b0 " + html.escape(p))
+            if tags:
+                row += "  <i>" + "  \u00b7  ".join(tags) + "</i>"
+            sec.append(row)
+        if sec:
+            live_sections.append(f"<b>{name}</b>" + NL + NL.join(sec))
+        print(f"  [ok] {name}: {len(items)} results, showing {min(len(items),4)}")
 
-    static_items = get_static_opportunities()
-    live_items = [i for i in live_items if i.get("title") and i.get("url")]
-    today = date.today().strftime("%b %d, %Y")
-    print(f"Total: {len(live_items)} live + {len(static_items)} static")
-
-    SOURCE_EMOJI = {
-        "Devpost": "U0001f4bb", "MLH": "U0001f3eb", "Unstop": "U0001f3c6",
-        "DoraHacks": "U0001f310", "ETHGlobal": "⧠", "YC": "U0001f680",
-    }
-    CAT_EMOJI = {
-        "Crypto Hackathon":   "⛓",
-        "Crypto Accelerator": "U0001f52e",
-        "Crypto Grants":      "U0001f48e",
-        "AI Hackathon":       "U0001f916",
-        "AI Accelerator":     "U0001f9e0",
-        "Cohort":             "U0001f465",
-        "Incubator":          "U0001f331",
-        "Hackathon":          "U0001f4bb",
-        "Grant":              "U0001f4b0",
-    }
-
-    # ── MESSAGE 1: Live listings (change daily) ───────────────────────────────────
-    by_source = {}
-    for item in live_items:
-        by_source.setdefault(item["source"], []).append(item)
-
-    NL = "\n"
-    lines = [
-        "U0001f3af <b>Daily Digest</b> — " + today,
-        "<i>U0001f7e2 " + str(len(live_items)) + " live listings  |  U0001f4da " + str(len(static_items)) + " ongoing programs</i>",
-    ]
-
-    if by_source:
+    # ── Message 1 : Live listings (sent every day) ──────────────────────────────────
+    lines = [f"U0001f680 <b>Hackathon + Opportunity Digest</b>"]
+    lines.append(f"{dow}, {today_str}")
+    lines.append("")
+    if live_sections:
+        lines.append("<b>U0001f4e1 Live Listings</b>")
         lines.append("")
-        lines.append("――― LIVE THIS WEEK ―――")
-        for source, items in by_source.items():
-            emoji = SOURCE_EMOJI.get(source, "U0001f4cc")
-            lines.append("")
-            lines.append(emoji + " <b>" + source + "</b>  (" + str(len(items)) + " open)")
-            for item in items[:4]:
-                t = html.escape(item["title"][:65])
-                u = item["url"]
-                d = item.get("deadline", "")
-                row = '  · <a href="' + u + '">' + t + '</a>'
-                if d:
-                    row += "  <i>— " + html.escape(d[:35]) + "</i>"
-                lines.append(row)
-            if len(items) > 4:
-                lines.append("  <i>+" + str(len(items)-4) + " more on site →</i>")
+        lines += live_sections
     else:
-        lines.append("")
-        lines.append("⚠️ No live listings scraped today — see programs below.")
+        lines.append("No live listings found today.")
+    msg1 = NL.join(lines)
+    for chunk in chunk_messages(msg1):
+        send_telegram(chunk)
 
-    send_telegram(NL.join(lines))
+    # ── Message 2+ : Static programs (Mondays only) ─────────────────────────────────
+    if not is_monday:
+        print(f"[skip] Programs digest not sent (runs Mondays only — today is {dow})")
+        return
 
-    # ── MESSAGE 2+: Ongoing programs by category ────────────────────────────────────
+    print("Monday — sending programs digest...")
     by_cat = {}
     for item in static_items:
-        cat = item.get("category", "Other")
+        cat = item.get("source", "Other")
         by_cat.setdefault(cat, []).append(item)
 
-    prog_lines = [
-        "U0001f4da <b>Ongoing Programs</b>  (" + str(len(static_items)) + " open to apply)",
-        "<i>Tap any link to apply — sorted by category</i>",
-    ]
+    CAT_EMOJI = {
+        "Crypto Accelerator": "U0001f525",
+        "AI Accelerator":     "U0001f916",
+        "General Accelerator":"U0001f3c6",
+        "Incubator":          "U0001f331",
+        "Cohort":             "U0001f91d",
+        "Grant":              "U0001f4b8",
+        "Fellowship":         "U0001f393",
+        "Competition":        "U0001f3af",
+    }
 
-    for cat, items in by_cat.items():
-        emoji = CAT_EMOJI.get(cat, "U0001f4cc")
-        prog_lines.append("")
-        prog_lines.append(emoji + " <b>" + cat + "</b>  (" + str(len(items)) + ")")
-        for item in items:
-            t = html.escape(item["title"])
-            u = item["url"]
-            note = item.get("note", "")
-            line = '  · <a href="' + u + '">' + t + '</a>'
-            if note:
-                line += "  <i>— " + html.escape(note[:40]) + "</i>"
-            prog_lines.append(line)
-
+    prog_lines = [f"U0001f4c5 <b>Programs Digest</b> (weekly — {today_str})"]
+    prog_lines.append(f"FOCUS: {FOCUS}")
     prog_lines.append("")
-    prog_lines.append("<i>HackathonBot · runs daily at 8am</i>")
-
+    for cat, items in by_cat.items():
+        emoji = CAT_EMOJI.get(cat, "⭐")
+        prog_lines.append(f"{emoji} <b>{html.escape(cat)}</b>")
+        for it in items:
+            title  = html.escape(it.get("title", "")[:70])
+            url    = it.get("url", "")
+            status = it.get("status", "")
+            badge  = f" <i>({html.escape(status)})</i>" if status else ""
+            prog_lines.append(f"  • <a href=\"{url}\">{title}</a>{badge}")
+        prog_lines.append("")
     for chunk in chunk_messages(NL.join(prog_lines)):
         send_telegram(chunk)
 
