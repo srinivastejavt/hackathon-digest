@@ -1,27 +1,27 @@
 #!/usr/bin/env python3
 """
-Hackathon + Incubator Daily Scraper
+Hackathon + Incubator + Accelerator + Cohort Daily Scraper
+Covers: hackathons, crypto accelerators, AI accelerators, incubators, cohorts
 Credentials injected via GitHub Secrets: TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
 """
-import os, json, hashlib, html, requests
+
+import os, json, html, requests
 from datetime import datetime, date
 from bs4 import BeautifulSoup
 
+# ── CONFIG ────────────────────────────────────────────────────────────────────
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
-SEEN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".seen_items.json")
-HEADERS = {"User-Agent": "Mozilla/5.0 Chrome/124.0.0.0"}
 
-def load_seen():
-    if os.path.exists(SEEN_FILE):
-        with open(SEEN_FILE) as f: return set(json.load(f))
-    return set()
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    )
+}
+# ─────────────────────────────────────────────────────────────────────────────
 
-def save_seen(seen):
-    with open(SEEN_FILE, "w") as f: json.dump(list(seen), f)
-
-def item_id(title, url):
-    return hashlib.md5((title + "|" + url).encode()).hexdigest()
 
 def get(url, timeout=10):
     try:
@@ -29,143 +29,264 @@ def get(url, timeout=10):
         r.raise_for_status()
         return r
     except Exception as e:
-        print("  [warn]", url, "->", e)
+        print(f"  [warn] GET {url} -> {e}")
         return None
+
+
+# ── LIVE SCRAPERS ─────────────────────────────────────────────────────────────
 
 def scrape_devpost():
     items = []
     r = get("https://devpost.com/api/hackathons?status[]=upcoming&status[]=open&order_by=deadline&per_page=20")
-    if not r: return items
+    if not r:
+        return items
     try:
         for h in r.json().get("hackathons", []):
-            items.append({"title": h.get("title",""), "url": h.get("url",""), "deadline": h.get("submission_period_dates",""), "prize": h.get("prize_amount",""), "source": "Devpost"})
-    except Exception as e: print("  [devpost]", e)
+            items.append({
+                "title": h.get("title", ""),
+                "url": h.get("url", ""),
+                "deadline": h.get("submission_period_dates", ""),
+                "prize": h.get("prize_amount", ""),
+                "source": "Devpost",
+            })
+    except Exception as e:
+        print(f"  [devpost] {e}")
     return items
+
 
 def scrape_mlh():
     items = []
     r = get("https://mlh.io/seasons/2026/events")
-    if not r: return items
+    if not r:
+        return items
     soup = BeautifulSoup(r.text, "lxml")
     for event in soup.select(".event"):
-        t = event.select_one(".event-name")
-        l = event.select_one("a.event-link")
-        d = event.select_one(".event-date")
-        if t and l:
-            items.append({"title": t.get_text(strip=True), "url": l.get("href",""), "deadline": d.get_text(strip=True) if d else "", "prize": "", "source": "MLH"})
+        title_el = event.select_one(".event-name")
+        link_el  = event.select_one("a.event-link")
+        date_el  = event.select_one(".event-date")
+        if title_el and link_el:
+            items.append({
+                "title": title_el.get_text(strip=True),
+                "url": link_el.get("href", ""),
+                "deadline": date_el.get_text(strip=True) if date_el else "",
+                "prize": "",
+                "source": "MLH",
+            })
     return items
 
-def scrape_devfolio():
-    items = []
-    r = get("https://devfolio.co/api/search/hackathons/?is_open=true&page=1&per_page=20")
-    if not r: return items
-    try:
-        for h in r.json().get("results", []):
-            slug = h.get("slug","")
-            items.append({"title": h.get("name",""), "url": "https://devfolio.co/hackathons/" + slug, "deadline": h.get("ends_at","")[:10] if h.get("ends_at") else "", "prize": "", "source": "Devfolio"})
-    except Exception as e: print("  [devfolio]", e)
-    return items
 
 def scrape_unstop():
     items = []
     r = get("https://unstop.com/api/public/opportunity/search-result?opportunity=hackathons&per_page=20&page=1&deadline=open")
-    if not r: return items
+    if not r:
+        return items
     try:
         for h in r.json().get("data", {}).get("data", []):
-            items.append({"title": h.get("title",""), "url": "https://unstop.com/hackathons/" + h.get("slug",""), "deadline": h.get("end_date",""), "prize": str(h.get("prize_money","")), "source": "Unstop"})
-    except Exception as e: print("  [unstop]", e)
+            items.append({
+                "title": h.get("title", ""),
+                "url": "https://unstop.com/hackathons/" + h.get("slug", ""),
+                "deadline": h.get("end_date", ""),
+                "prize": str(h.get("prize_money", "")),
+                "source": "Unstop",
+            })
+    except Exception as e:
+        print(f"  [unstop] {e}")
     return items
+
+
+def scrape_dorahacks():
+    items = []
+    r = get("https://dorahacks.io/api/hackathon/list/?limit=20&status=open")
+    if not r:
+        return items
+    try:
+        data = r.json()
+        for h in data.get("data", data.get("list", [])):
+            slug = h.get("slug") or h.get("url_slug", "")
+            items.append({
+                "title": h.get("title", h.get("name", "")),
+                "url": "https://dorahacks.io/hackathon/" + slug if slug else "https://dorahacks.io",
+                "deadline": str(h.get("end_time", h.get("application_end", "")))[:10],
+                "prize": str(h.get("prize_pool", "")),
+                "source": "DoraHacks",
+            })
+    except Exception as e:
+        print(f"  [dorahacks] {e}")
+    return items
+
+
+def scrape_ethglobal():
+    items = []
+    r = get("https://ethglobal.com/events/hackathons")
+    if not r:
+        return items
+    try:
+        soup = BeautifulSoup(r.text, "lxml")
+        seen_urls = set()
+        for card in soup.select("a[href*='/events/']"):
+            title = card.get_text(strip=True)
+            href = card.get("href", "")
+            if title and href and len(title) > 3:
+                url = href if href.startswith("http") else "https://ethglobal.com" + href
+                if url not in seen_urls:
+                    seen_urls.add(url)
+                    items.append({"title": title[:80], "url": url, "deadline": "", "prize": "", "source": "ETHGlobal"})
+    except Exception as e:
+        print(f"  [ethglobal] {e}")
+    return items[:10]
+
 
 def scrape_yc():
     items = []
     r = get("https://www.ycombinator.com/apply")
-    if not r: return items
+    if not r:
+        return items
     soup = BeautifulSoup(r.text, "lxml")
-    deadline = ""
-    for tag in soup.find_all(["h1","h2","h3","p","span"]):
+    deadline_text = ""
+    for tag in soup.find_all(["h1", "h2", "h3", "p", "span"]):
         t = tag.get_text(strip=True)
         if "deadline" in t.lower() or "batch" in t.lower():
-            deadline = t[:120]; break
-    items.append({"title": "Y Combinator - " + (deadline or "Check for current batch"), "url": "https://www.ycombinator.com/apply", "deadline": deadline, "prize": "120k USD + network", "source": "YC"})
+            deadline_text = t[:120]
+            break
+    items.append({
+        "title": "Y Combinator -- " + (deadline_text or "Apply now"),
+        "url": "https://www.ycombinator.com/apply",
+        "deadline": deadline_text,
+        "prize": "$500k investment",
+        "source": "YC",
+    })
     return items
 
-INCUBATORS = [
-    {"title": "Y Combinator (YC) - Apply", "url": "https://www.ycombinator.com/apply", "source": "YC", "note": "Check site for current batch deadline"},
-    {"title": "Antler - Apply", "url": "https://www.antler.co/apply", "source": "Antler", "note": "Rolling applications"},
-    {"title": "Techstars - Apply", "url": "https://www.techstars.com/apply", "source": "Techstars", "note": "Check site for open programs"},
-    {"title": "Pioneer - Apply", "url": "https://pioneer.app", "source": "Pioneer", "note": "Rolling tournament, apply anytime"},
-    {"title": "a16z Speedrun - Apply", "url": "https://speedrun.a16z.com", "source": "a16z", "note": "Check for open cohorts"},
-    {"title": "Entrepreneur First (EF) - Apply", "url": "https://www.joinef.com/apply", "source": "EF", "note": "Check site for open cohorts"},
-    {"title": "500 Global - Apply", "url": "https://500.co/accelerators", "source": "500 Global", "note": "Multiple programs worldwide"},
+
+# ── STATIC OPPORTUNITIES ──────────────────────────────────────────────────────
+
+STATIC_OPPORTUNITIES = [
+    # CRYPTO / WEB3
+    {"title": "Colosseum -- Solana Accelerator", "url": "https://www.colosseum.org/accelerator", "note": "Rolling cohorts for Solana projects", "category": "Crypto Accelerator"},
+    {"title": "Colosseum -- Solana Hackathon", "url": "https://www.colosseum.org", "note": "Check for live hackathons", "category": "Crypto Hackathon"},
+    {"title": "Alliance DAO -- Crypto Accelerator", "url": "https://alliance.xyz/apply", "note": "Top crypto accelerator, rolling apps", "category": "Crypto Accelerator"},
+    {"title": "Outlier Ventures -- Base Camp (Web3 AI)", "url": "https://outlierventures.io/base-camp/", "note": "12-week remote accelerator", "category": "Crypto Accelerator"},
+    {"title": "Encode Club -- Hackathons & Accelerator", "url": "https://www.encode.club", "note": "Web3 education + hackathons", "category": "Crypto Hackathon"},
+    {"title": "Superteam -- Grants & Bounties", "url": "https://superteam.fun", "note": "Solana ecosystem, rolling grants", "category": "Crypto Grants"},
+    {"title": "Near Horizon -- Web3 Accelerator", "url": "https://near.org/horizon", "note": "NEAR ecosystem accelerator", "category": "Crypto Accelerator"},
+    {"title": "a16z crypto -- Accelerator (CSX)", "url": "https://a16zcrypto.com/csx", "note": "10-week intensive, $500k investment", "category": "Crypto Accelerator"},
+    {"title": "Paradigm -- Fellowship & Grants", "url": "https://www.paradigm.xyz/grants", "note": "Crypto research & dev grants", "category": "Crypto Grants"},
+    {"title": "Binance Labs -- Incubation", "url": "https://labs.binance.com", "note": "Web3 incubation + investment", "category": "Crypto Accelerator"},
+    {"title": "Polygon Village -- Accelerator", "url": "https://polygon.technology/village", "note": "Polygon ecosystem projects", "category": "Crypto Accelerator"},
+    {"title": "Filecoin Dev Grants", "url": "https://grants.filecoin.io", "note": "Rolling grants for decentralized storage", "category": "Crypto Grants"},
+    # AI
+    {"title": "AI Grant -- Batch Applications", "url": "https://aigrant.com", "note": "Rolling; $10k-$250k for AI projects", "category": "AI Accelerator"},
+    {"title": "AI2 Incubator -- Apply", "url": "https://www.ai2incubator.com", "note": "Allen Institute for AI, seed-stage", "category": "AI Accelerator"},
+    {"title": "Conviction -- Embed Program", "url": "https://www.conviction.com/embed", "note": "6-month AI builder residency", "category": "AI Accelerator"},
+    {"title": "Mozilla Builders -- AI Accelerator", "url": "https://builders.mozilla.org", "note": "Trustworthy AI, $75k equity-free", "category": "AI Accelerator"},
+    {"title": "Google for Startups -- AI First", "url": "https://startup.google.com/programs/ai-first/", "note": "Google Cloud credits + mentorship", "category": "AI Accelerator"},
+    {"title": "Microsoft for Startups -- Founders Hub", "url": "https://www.microsoft.com/en-us/startups", "note": "Up to $150k Azure credits", "category": "AI Accelerator"},
+    {"title": "Hugging Face -- Incubator", "url": "https://huggingface.co/incubator", "note": "Open-source AI cohort", "category": "AI Accelerator"},
+    # GENERAL
+    {"title": "Y Combinator -- Apply", "url": "https://www.ycombinator.com/apply", "note": "2x/year, $500k investment", "category": "Incubator"},
+    {"title": "Antler -- Global Residency", "url": "https://www.antler.co/apply", "note": "Rolling, day-zero investor", "category": "Incubator"},
+    {"title": "Techstars -- Apply", "url": "https://www.techstars.com/apply", "note": "Many programs worldwide", "category": "Accelerator"},
+    {"title": "Pioneer -- Tournament", "url": "https://pioneer.app", "note": "Rolling, global remote accelerator", "category": "Accelerator"},
+    {"title": "a16z Speedrun -- Apply", "url": "https://speedrun.a16z.com", "note": "Fast 4-week cohort", "category": "Accelerator"},
+    {"title": "Entrepreneur First (EF)", "url": "https://www.joinef.com/apply", "note": "Pre-team, pre-idea accelerator", "category": "Accelerator"},
+    {"title": "500 Global -- Accelerator", "url": "https://500.co/accelerators", "note": "Multiple programs worldwide", "category": "Accelerator"},
 ]
 
-def get_static_incubators():
-    return [{"title": i["title"], "url": i["url"], "deadline": i.get("note",""), "prize": "", "source": i["source"]} for i in INCUBATORS]
+
+def get_static_opportunities():
+    return [{"title": o["title"], "url": o["url"], "deadline": o.get("note", ""), "prize": "", "source": o["category"]} for o in STATIC_OPPORTUNITIES]
+
+
+# ── TELEGRAM ──────────────────────────────────────────────────────────────────
 
 def send_telegram(text):
-    if not TELEGRAM_TOKEN:
-        print("[telegram] Token not set"); return
-    r = requests.post("https://api.telegram.org/bot" + TELEGRAM_TOKEN + "/sendMessage",
-        json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML", "disable_web_page_preview": False}, timeout=10)
-    print("[telegram] sent" if r.ok else "[telegram] error " + str(r.status_code))
+    r = requests.post(
+        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+        json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True},
+        timeout=10
+    )
+    if r.ok:
+        print("[telegram] Message sent")
+    else:
+        print(f"[telegram] Error {r.status_code}: {r.text}")
+
 
 def chunk_messages(text, limit=4096):
     lines = text.split("\n")
-    chunks, cur = [], ""
+    chunks, current = [], ""
     for line in lines:
-        if len(cur) + len(line) + 1 > limit:
-            chunks.append(cur.strip()); cur = line + "\n"
+        if len(current) + len(line) + 1 > limit:
+            chunks.append(current.strip())
+            current = line + "\n"
         else:
-            cur += line + "\n"
-    if cur.strip(): chunks.append(cur.strip())
+            current += line + "\n"
+    if current.strip():
+        chunks.append(current.strip())
     return chunks
 
+
+# ── MAIN ──────────────────────────────────────────────────────────────────────
+
 def main():
-    print("[" + datetime.now().strftime("%Y-%m-%d %H:%M") + "] Starting...")
-    seen = load_seen()
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] Starting scrape...")
+
+    scrapers = [
+        ("Devpost",   scrape_devpost),
+        ("MLH",       scrape_mlh),
+        ("Unstop",    scrape_unstop),
+        ("DoraHacks", scrape_dorahacks),
+        ("ETHGlobal", scrape_ethglobal),
+        ("YC",        scrape_yc),
+        ("Static",    get_static_opportunities),
+    ]
+
     all_items = []
-    for name, fn in [("Devpost",scrape_devpost),("MLH",scrape_mlh),("Devfolio",scrape_devfolio),("Unstop",scrape_unstop),("YC",scrape_yc),("Incubators",get_static_incubators)]:
-        print("  " + name + "...")
+    for name, fn in scrapers:
+        print(f"  Scraping {name}...")
         try:
-            r = fn(); print("    ->", len(r)); all_items.extend(r)
+            results = fn()
+            print(f"    -> {len(results)} items")
+            all_items.extend(results)
         except Exception as e:
-            print("    -> error:", e)
+            print(f"    -> error: {e}")
 
-    new_items = []
-    for item in all_items:
-        if not item.get("title") or not item.get("url"): continue
-        uid = item_id(item["title"], item["url"])
-        if uid not in seen:
-            new_items.append(item); seen.add(uid)
-    save_seen(seen)
-    print("New:", len(new_items), "/", len(all_items))
+    items = [i for i in all_items if i.get("title") and i.get("url")]
+    print(f"\nTotal: {len(items)} opportunities")
 
-    EMOJI = {"Devpost":"💻","MLH":"🏫","Devfolio":"🛠","Unstop":"🏆","YC":"🚀","Antler":"🌍","Techstars":"⭐","Pioneer":"🧭","a16z":"💰","EF":"🤝","500 Global":"🌐","Incubators":"🏢"}
-
-    if not new_items:
-        send_telegram("🔍 <b>Hackathon & Incubator Digest</b> - " + str(date.today()) + "\n\nNo new opportunities today!"); return
+    if not items:
+        send_telegram(f"No opportunities found today ({date.today()}). Check back tomorrow!")
+        return
 
     by_source = {}
-    for item in new_items: by_source.setdefault(item["source"], []).append(item)
+    for item in items:
+        by_source.setdefault(item["source"], []).append(item)
 
-    lines = ["🎯 <b>Hackathon & Incubator Digest</b> - " + str(date.today()) + "\n"]
-    for source, items in by_source.items():
-        emoji = EMOJI.get(source, "📌")
-        lines.append("\n" + emoji + " <b>" + source + "</b> (" + str(len(items)) + " new)")
-        for item in items[:10]:
-            url = item["url"]
+    SOURCE_EMOJI = {
+        "Devpost": "💻", "MLH": "🏫", "Unstop": "🏆", "DoraHacks": "🌐",
+        "ETHGlobal": "⟠", "YC": "🚀", "Crypto Hackathon": "⛓",
+        "Crypto Accelerator": "🔮", "Crypto Grants": "💎",
+        "AI Accelerator": "🤖", "Incubator": "🌱", "Accelerator": "⚡",
+    }
+
+    lines = ["🎯 <b>Hackathon & Opportunity Digest</b> -- " + str(date.today()) + "\n"]
+
+    for source, source_items in by_source.items():
+        emoji = SOURCE_EMOJI.get(source, "📌")
+        lines.append("\n" + emoji + " <b>" + source + "</b> (" + str(len(source_items)) + ")")
+        for item in source_items[:8]:
             title = html.escape(item["title"][:80])
             url = item["url"]
-            deadline = html.escape(item.get("deadline", ""))
-            prize = html.escape(str(item.get("prize", "")))
-            entry = '  • <a href="' + url + '">' + title + '</a>'
-            if deadline: entry += "\n    📅 " + deadline[:60]
-            if prize: entry += " | 💵 " + prize
+            note = html.escape(item.get("deadline", "")[:60])
+            entry = '  • <a href="' + url + '">' + title + "</a>"
+            if note:
+                entry += "\n    📌 " + note
             lines.append(entry)
-    lines.append("\n\n<i>Total: " + str(len(new_items)) + " new | HackathonBot</i>")
+
+    lines.append("\n\n<i>" + str(len(items)) + " opportunities | HackathonBot</i>")
 
     for chunk in chunk_messages("\n".join(lines)):
         send_telegram(chunk)
+
 
 if __name__ == "__main__":
     main()
