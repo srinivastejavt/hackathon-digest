@@ -309,7 +309,8 @@ def chunk_messages(text, limit=4096):
 
 
 
-# ── MAIN ─────────────────────────────────────────────────────────────────────────────
+
+# ── MAIN ──────────────────────────────────────────────────────────────────────────────────────
 
 def main():
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] Starting scrape...")
@@ -342,7 +343,6 @@ def main():
         "Devpost": "U0001f4bb", "MLH": "U0001f3eb", "Unstop": "U0001f3c6",
         "DoraHacks": "U0001f310", "ETHGlobal": "⧠", "YC": "U0001f680",
     }
-
     CAT_EMOJI = {
         "Crypto Hackathon":   "⛓",
         "Crypto Accelerator": "U0001f52e",
@@ -355,14 +355,15 @@ def main():
         "Grant":              "U0001f4b0",
     }
 
-    # ── MESSAGE 1: Live listings (change daily) ─────────────────────────────
+    # ── MESSAGE 1: Live listings (change daily) ───────────────────────────────────
     by_source = {}
     for item in live_items:
         by_source.setdefault(item["source"], []).append(item)
 
+    NL = "\n"
     lines = [
-        f"U0001f3af <b>Daily Digest</b> — {today}",
-        f"<i>U0001f7e2 {len(live_items)} live listings  |  U0001f4da {len(static_items)} ongoing programs</i>",
+        "U0001f3af <b>Daily Digest</b> — " + today,
+        "<i>U0001f7e2 " + str(len(live_items)) + " live listings  |  U0001f4da " + str(len(static_items)) + " ongoing programs</i>",
     ]
 
     if by_source:
@@ -370,51 +371,52 @@ def main():
         lines.append("――― LIVE THIS WEEK ―――")
         for source, items in by_source.items():
             emoji = SOURCE_EMOJI.get(source, "U0001f4cc")
-            lines.append(f"
-{emoji} <b>{source}</b>  ({len(items)} open)")
+            lines.append("")
+            lines.append(emoji + " <b>" + source + "</b>  (" + str(len(items)) + " open)")
             for item in items[:4]:
                 t = html.escape(item["title"][:65])
                 u = item["url"]
                 d = item.get("deadline", "")
                 row = '  · <a href="' + u + '">' + t + '</a>'
                 if d:
-                    row += '  <i>— ' + html.escape(d[:35]) + '</i>'
+                    row += "  <i>— " + html.escape(d[:35]) + "</i>"
                 lines.append(row)
             if len(items) > 4:
-                lines.append(f'  <i>+{len(items)-4} more on site →</i>')
+                lines.append("  <i>+" + str(len(items)-4) + " more on site →</i>")
     else:
         lines.append("")
-        lines.append("⚠️ No live listings scraped today — see ongoing programs below.")
+        lines.append("⚠️ No live listings scraped today — see programs below.")
 
-    send_telegram("\n".join(lines))
+    send_telegram(NL.join(lines))
 
-    # ── MESSAGE 2+: Ongoing programs (static, grouped by category) ─────────
+    # ── MESSAGE 2+: Ongoing programs by category ────────────────────────────────────
     by_cat = {}
     for item in static_items:
         cat = item.get("category", "Other")
         by_cat.setdefault(cat, []).append(item)
 
     prog_lines = [
-        f"U0001f4da <b>Ongoing Programs</b>  ({len(static_items)} open to apply)",
-        "<i>Sorted by category — tap any link to apply</i>",
+        "U0001f4da <b>Ongoing Programs</b>  (" + str(len(static_items)) + " open to apply)",
+        "<i>Tap any link to apply — sorted by category</i>",
     ]
 
     for cat, items in by_cat.items():
         emoji = CAT_EMOJI.get(cat, "U0001f4cc")
-        prog_lines.append(f"
-{emoji} <b>{cat}</b>  ({len(items)})")
+        prog_lines.append("")
+        prog_lines.append(emoji + " <b>" + cat + "</b>  (" + str(len(items)) + ")")
         for item in items:
             t = html.escape(item["title"])
             u = item["url"]
             note = item.get("note", "")
             line = '  · <a href="' + u + '">' + t + '</a>'
             if note:
-                line += '  <i>— ' + html.escape(note[:40]) + '</i>'
+                line += "  <i>— " + html.escape(note[:40]) + "</i>"
             prog_lines.append(line)
 
-    prog_lines.append(f"\n<i>HackathonBot · runs daily at 8am</i>")
+    prog_lines.append("")
+    prog_lines.append("<i>HackathonBot · runs daily at 8am</i>")
 
-    for chunk in chunk_messages("\n".join(prog_lines)):
+    for chunk in chunk_messages(NL.join(prog_lines)):
         send_telegram(chunk)
 
 
