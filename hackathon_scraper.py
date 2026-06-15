@@ -3,7 +3,7 @@
 Hackathon + Incubator Daily Scraper
 Credentials injected via GitHub Secrets: TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
 """
-import os, json, hashlib, requests
+import os, json, hashlib, html, requests
 from datetime import datetime, date
 from bs4 import BeautifulSoup
 
@@ -154,9 +154,10 @@ def main():
         lines.append("\n" + emoji + " <b>" + source + "</b> (" + str(len(items)) + " new)")
         for item in items[:10]:
             url = item["url"]
-            title = item["title"][:80]
-            deadline = item.get("deadline", "")
-            prize = item.get("prize", "")
+            title = html.escape(item["title"][:80])
+            url = item["url"]
+            deadline = html.escape(item.get("deadline", ""))
+            prize = html.escape(str(item.get("prize", "")))
             entry = '  • <a href="' + url + '">' + title + '</a>'
             if deadline: entry += "\n    📅 " + deadline[:60]
             if prize: entry += " | 💵 " + prize
